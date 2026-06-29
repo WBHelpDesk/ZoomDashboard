@@ -155,9 +155,8 @@
     statsRow.style.display = 'grid';
     statsRow.innerHTML = [
       ['Total this month', total.toLocaleString()],
-      ['Call queues', data.length],
-      ['Avg per queue', avg.toLocaleString()],
-      ['Busiest queue', peakName],
+      ['Avg per PM', avg.toLocaleString()],
+      ['Busiest PM', peakName],
     ].map(function(item) {
       return '<div class="stat-card"><p class="stat-label">' + item[0] + '</p><p class="stat-value">' + item[1] + '</p></div>';
     }).join('');
