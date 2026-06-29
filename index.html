@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Zoom Phone — Outbound calls this month</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@2.44.0/tabler-icons.min.css">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #f5f5f3; --surface: #ffffff; --surface-1: #f5f5f3;
+    --text-primary: #0b0b0b; --text-secondary: #52514e; --text-muted: #898781;
+    --border: rgba(11,11,11,0.10); --border-strong: rgba(11,11,11,0.18);
+    --radius: 8px; --accent: #2a78d6; --accent-text: #ffffff;
+    --danger-bg: #fcebeb; --danger-text: #a32d2d; --danger-border: #f09595;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #141413; --surface: #1f1f1e; --surface-1: #1a1a19;
+      --text-primary: #ffffff; --text-secondary: #c3c2b7; --text-muted: #898781;
+      --border: rgba(255,255,255,0.10); --border-strong: rgba(255,255,255,0.18);
+      --danger-bg: #2a1010; --danger-text: #f09595; --danger-border: #a32d2d;
+    }
+  }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--text-primary); min-height: 100vh; padding: 2rem; }
+  h1 { font-size: 22px; font-weight: 500; }
+  .header { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-bottom: 1.5rem; }
+  .eyebrow { font-size: 13px; color: var(--text-muted); margin-bottom: 2px; }
+  .month-range { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+  .header-right { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .live-chip { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text-muted); padding: 4px 10px; border-radius: 20px; border: 0.5px solid var(--border); background: var(--surface); }
+  #liveDot { width: 7px; height: 7px; border-radius: 50%; background: #888780; flex-shrink: 0; }
+  button { font-size: 13px; padding: 6px 14px; border-radius: var(--radius); border: 0.5px solid var(--border-strong); background: var(--surface); color: var(--text-primary); cursor: pointer; display: flex; align-items: center; gap: 6px; font-family: inherit; }
+  button:hover { background: var(--surface-1); }
+  .stats-row { display: none; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-bottom: 1.5rem; }
+  .stat-card { background: var(--surface-1); border-radius: var(--radius); padding: 14px 16px; }
+  .stat-label { font-size: 12px; color: var(--text-muted); margin-bottom: 4px; }
+  .stat-value { font-size: 20px; font-weight: 500; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #chartWrap { display: none; }
+  #canvasWrap { position: relative; width: 100%; }
+  .footer-meta { font-size: 12px; color: var(--text-muted); text-align: right; margin-top: 6px; }
+  #errorMsg { display: none; background: var(--danger-bg); color: var(--danger-text); border: 0.5px solid var(--danger-border); border-radius: var(--radius); padding: 10px 14px; font-size: 13px; margin-top: 1rem; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <p class="eyebrow">Zoom Phone</p>
+    <h1>Outbound calls — this month</h1>
+    <p class="month-range" id="monthRange"></p>
+  </div>
+  <div class="header-right">
+    <div class="live-chip">
+      <span id="liveDot"></span>
+      <span id="liveLabel">Connecting…</span>
+    </div>
+    <button id="refreshBtn" onclick="loadData()">
+      <i class="ti ti-refresh"></i> Refresh
+    </button>
+  </div>
+</div>
+
+<div class="stats-row" id="statsRow"></div>
+<div id="chartWrap">
+  <div id="canvasWrap"></div>
+  <p class="footer-meta" id="nextReset"></p>
+  <p class="footer-meta" id="lastUpdated"></p>
+</div>
+<div id="errorMsg"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script>
+  const WORKER = 'https://zoom-phone-proxy.helpdesk-bba.workers.dev';
+  let chartInstance = null;
+
+  function getMonthWindow() {
+    const now = new Date();
+    const from = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+    const to = new Date(now);
+    return { from: from, to: to };
+  }
+
+  function fmt(d) { return d.toISOString().slice(0, 10); }
+
+  function fmtDate(d) {
+    return d.toLocaleDateString([], { month: 'long', day: 'numeric', year: 'numeric' });
+  }
+
+  function fmtTime(d) {
+    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  }
+
+  function msUntilNextMonth() {
+    const now = new Date();
+    const next = new Date(now.getFullYear(), now.getMonth() + 1, 1, 0, 0, 0, 0);
+    return next - now;
+  }
+
+  function humanDuration(ms) {
+    const h = Math.floor(ms / 3600000), m = Math.floor((ms % 3600000) / 60000);
+    if (h > 48) return Math.floor(h / 24) + 'd ' + (h % 24) + 'h';
+    return h > 0 ? h + 'h ' + m + 'm' : m + 'm';
+  }
+
+  function setLive(on) {
+    document.getElementById('liveDot').style.background = on ? '#0ca30c' : '#e24b4a';
+    document.getElementById('liveLabel').textContent = on ? 'Live · auto-refresh 5 min' : 'Connection error';
+  }
+
+  function showError(msg) {
+    const el = document.getElementById('errorMsg');
+    el.textContent = msg;
+    el.style.display = 'block';
+    setTimeout(function() { el.style.display = 'none'; }, 8000);
+  }
+
+  function updateMonthLabel() {
+    const { from, to } = getMonthWindow();
+    document.getElementById('monthRange').textContent =
+      fmtDate(from) + ' midnight – ' + fmtDate(to) + ' ' + fmtTime(to);
+    const next = new Date(to.getFullYear(), to.getMonth() + 1, 1);
+    document.getElementById('nextReset').textContent =
+      'Resets ' + next.toLocaleDateString([], { month: 'long', day: 'numeric' }) + ' at midnight · ' + humanDuration(msUntilNextMonth()) + ' away';
+  }
+
+  async function loadData() {
+    document.getElementById('refreshBtn').disabled = true;
+    try {
+      const { from, to } = getMonthWindow();
+      const res = await fetch(WORKER + '?action=counts&from=' + fmt(from) + '&to=' + fmt(to));
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      if (!data.queues || !data.queues.length) { showError('No call queues found.'); setLive(false); return; }
+      renderChart(data.queues);
+      setLive(true);
+    } catch(e) {
+      setLive(false);
+      showError('Error: ' + e.message);
+    } finally {
+      document.getElementById('refreshBtn').disabled = false;
+    }
+  }
+
+  function renderChart(data) {
+    updateMonthLabel();
+    data.sort(function(a, b) { return b.count - a.count; });
+    const labels = data.map(function(d) { return d.name; });
+    const values = data.map(function(d) { return d.count; });
+    const total = values.reduce(function(a, b) { return a + b; }, 0);
+    const avg = data.length ? Math.round(total / data.length) : 0;
+    const peakName = data[0] ? data[0].name : '—';
+
+    const statsRow = document.getElementById('statsRow');
+    statsRow.style.display = 'grid';
+    statsRow.innerHTML = [
+      ['Total this month', total.toLocaleString()],
+      ['Call queues', data.length],
+      ['Avg per queue', avg.toLocaleString()],
+      ['Busiest queue', peakName],
+    ].map(function(item) {
+      return '<div class="stat-card"><p class="stat-label">' + item[0] + '</p><p class="stat-value">' + item[1] + '</p></div>';
+    }).join('');
+
+    const wrap = document.getElementById('canvasWrap');
+    const barH = Math.max(36, Math.min(52, 300 / data.length));
+    wrap.style.height = (data.length * barH + 80) + 'px';
+    document.getElementById('chartWrap').style.display = 'block';
+
+    const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    const gridColor = isDark ? '#2c2c2a' : '#e1e0d9';
+    const labelColor = isDark ? '#c3c2b7' : '#52514e';
+
+    if (chartInstance) chartInstance.destroy();
+    let canvas = document.getElementById('queueChart');
+    if (!canvas) { canvas = document.createElement('canvas'); canvas.id = 'queueChart'; wrap.appendChild(canvas); }
+    canvas.setAttribute('role', 'img');
+    canvas.setAttribute('aria-label', 'Bar chart: outbound calls per queue this month');
+
+    chartInstance = new Chart(canvas, {
+      type: 'bar',
+      data: {
+        labels: labels,
+        datasets: [{ label: 'Outbound calls', data: values, backgroundColor: '#2a78d6', borderRadius: 4, borderSkipped: 'start', barThickness: Math.max(14, barH - 14) }]
+      },
+      options: {
+        indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: false }, tooltip: { callbacks: { label: function(ctx) { return ' ' + ctx.parsed.x.toLocaleString() + ' calls'; } } } },
+        scales: {
+          x: { grid: { color: gridColor }, ticks: { color: '#898781', font: { size: 13 }, callback: function(v) { return v.toLocaleString(); } }, border: { color: gridColor } },
+          y: { grid: { display: false }, ticks: { color: labelColor, font: { size: 14 } }, border: { display: false } }
+        }
+      }
+    });
+
+    document.getElementById('lastUpdated').textContent = 'Last refreshed ' + fmtTime(new Date());
+  }
+
+  updateMonthLabel();
+  loadData();
+  setInterval(function() { updateMonthLabel(); loadData(); }, 5 * 60 * 1000);
+</script>
+</body>
+</html>
